@@ -1,376 +1,220 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {FHE, euint8, euint32, euint64, ebool} from "@fhevm/solidity/lib/FHE.sol";
+import {FHE, euint8, euint16} from "@fhevm/solidity/lib/FHE.sol";
 import {SepoliaConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
-/// @title Poker Game with FHE
-/// @notice A 2-player poker game using Zama FHE for encrypted cards
-/// @dev Cards are represented as numbers 1-52, encrypted under FHE
+/// @title Two-Player FHE Poker Demo
+/// @notice Minimal two-player draw-style game using encrypted cards (FHEVM)
 contract PokerGame is SepoliaConfig {
-    // Game constants
-    uint256 public constant JOIN_FEE = 0.0001 ether;
-    uint256 public constant CONTINUE_FEE = 0.0001 ether;
-    uint8 public constant MAX_PLAYERS = 2;
-    uint8 public constant CARDS_PER_PLAYER = 2;
-    uint8 public constant TOTAL_CARDS = 5;
-    
-    // Game states
     enum GameState {
-        WaitingForPlayers,    // 等待玩家加入
-        CardsDealt,          // 已发牌，等待玩家决策
-        GameFinished,        // 游戏结束
-        GameCancelled        // 游戏取消
+        Waiting,
+        Active,
+        Reveal,
+        Ended
     }
-    
-    // Player structure
+
     struct Player {
-        address playerAddress;
-        euint8[CARDS_PER_PLAYER] privateCards;  // 玩家的2张私牌（加密）
-        bool hasContinued;                       // 是否选择继续
-        bool hasJoined;                         // 是否已加入
-        bool hasDecided;                        // 是否已做决策
+        address addr;
+        uint8 cardCount;
+        bool committed;
+        euint8[5] cards;
     }
-    
-    // Game structure
-    struct Game {
-        uint256 gameId;
-        Player[MAX_PLAYERS] players;
-        euint8[TOTAL_CARDS] communityCards;     // 5张公共牌（加密）
-        GameState state;
-        uint256 prizePool;                       // 奖池
-        address winner;                          // 获胜者
-        uint256 createdAt;
-        uint8 playerCount;
-        uint8 continuedCount;                    // 选择继续的玩家数量
-        uint8 decidedCount;                      // 已做决策的玩家数量
-        uint8 dealtCards;                        // 已发牌数量
+
+    uint256 public constant STAKE = 0.0001 ether;
+
+    Player[2] private _players;
+    uint256 public pot;
+    GameState public state;
+    address public winner;
+
+    // Cached sums to decrypt and settle
+    euint16 private _sum0;
+    euint16 private _sum1;
+
+    event Joined(address indexed player, uint8 index);
+    event Dealt(address indexed player, uint8 newCount);
+    event Continued(address indexed player);
+    event Folded(address indexed player, address indexed opponent, uint256 amount);
+    event RevealRequested(uint256 requestId);
+    event Settled(address indexed winner, uint256 amount);
+
+    modifier onlyPlayers() {
+        require(msg.sender == _players[0].addr || msg.sender == _players[1].addr, "not a player");
+        _;
     }
-    
-    // State variables
-    mapping(uint256 => Game) public games;
-    mapping(address => uint256) public playerCurrentGame;
-    uint256 public gameCounter;
-    uint256 public deckPosition;                 // 当前牌堆位置
-    
-    // Events
-    event GameCreated(uint256 indexed gameId);
-    event PlayerJoined(uint256 indexed gameId, address indexed player);
-    event CardsDealt(uint256 indexed gameId);
-    event PlayerDecision(uint256 indexed gameId, address indexed player, bool continued);
-    event GameFinished(uint256 indexed gameId, address indexed winner, uint256 prize);
-    event GameCancelled(uint256 indexed gameId);
-    
-    /// @notice Creates a new game
-    /// @return gameId The ID of the created game
-    function createGame() external returns (uint256) {
-        gameCounter++;
-        uint256 gameId = gameCounter;
-        
-        Game storage game = games[gameId];
-        game.gameId = gameId;
-        game.state = GameState.WaitingForPlayers;
-        game.createdAt = block.timestamp;
-        game.playerCount = 0;
-        game.continuedCount = 0;
-        game.decidedCount = 0;
-        game.dealtCards = 0;
-        
-        emit GameCreated(gameId);
-        return gameId;
+
+    function playerIndex(address a) public view returns (int8) {
+        if (_players[0].addr == a) return 0;
+        if (_players[1].addr == a) return 1;
+        return -1;
     }
-    
-    /// @notice Allows a player to join a game
-    /// @param gameId The ID of the game to join
-    function joinGame(uint256 gameId) external payable {
-        require(msg.value == JOIN_FEE, "Incorrect join fee");
-        require(games[gameId].gameId != 0, "Game does not exist");
-        require(games[gameId].state == GameState.WaitingForPlayers, "Game not accepting players");
-        require(games[gameId].playerCount < MAX_PLAYERS, "Game is full");
-        require(playerCurrentGame[msg.sender] == 0, "Player already in a game");
-        
-        // Check if player already joined this game
-        for (uint8 i = 0; i < games[gameId].playerCount; i++) {
-            require(games[gameId].players[i].playerAddress != msg.sender, "Player already joined");
-        }
-        
-        Game storage game = games[gameId];
-        uint8 playerIndex = game.playerCount;
-        
-        game.players[playerIndex].playerAddress = msg.sender;
-        game.players[playerIndex].hasJoined = true;
-        game.players[playerIndex].hasContinued = false;
-        game.players[playerIndex].hasDecided = false;
-        game.playerCount++;
-        game.prizePool += msg.value;
-        
-        playerCurrentGame[msg.sender] = gameId;
-        
-        emit PlayerJoined(gameId, msg.sender);
-        
-        // If we have enough players, deal cards
-        if (game.playerCount == MAX_PLAYERS) {
-            _dealInitialCards(gameId);
-        }
+
+    function getPlayer(uint8 idx) public view returns (address addr, uint8 cardCount, bool committed) {
+        require(idx < 2, "idx");
+        Player storage p = _players[idx];
+        return (p.addr, p.cardCount, p.committed);
     }
-    
-    /// @notice Internal function to deal initial cards to all players
-    /// @param gameId The game ID
-    function _dealInitialCards(uint256 gameId) internal {
-        Game storage game = games[gameId];
-        
-        // Reset deck position for new game
-        deckPosition = 0;
-        
-        // Deal 2 cards to each player
-        for (uint8 playerIdx = 0; playerIdx < MAX_PLAYERS; playerIdx++) {
-            for (uint8 cardIdx = 0; cardIdx < CARDS_PER_PLAYER; cardIdx++) {
-                // Generate encrypted random card (1-52)
-                euint8 randomCard = FHE.randEuint8();
-                // Ensure card is in valid range (1-52)
-                euint8 card = FHE.add(FHE.rem(randomCard, 52), 1);
-                
-                game.players[playerIdx].privateCards[cardIdx] = card;
-                
-                // Grant access permissions
-                FHE.allowThis(card);
-                FHE.allow(card, game.players[playerIdx].playerAddress);
-                
-                game.dealtCards++;
-            }
-        }
-        
-        game.state = GameState.CardsDealt;
-        emit CardsDealt(gameId);
+
+    function getCardAt(uint8 idx, uint8 cardIdx) public view returns (euint8) {
+        require(idx < 2, "idx");
+        require(cardIdx < _players[idx].cardCount, "cardIdx");
+        return _players[idx].cards[cardIdx];
     }
-    
-    /// @notice Allows a player to make a decision (continue or fold)
-    /// @param gameId The game ID
-    /// @param continueGame Whether to continue (true) or fold (false)
-    function makeDecision(uint256 gameId, bool continueGame) external payable {
-        require(games[gameId].gameId != 0, "Game does not exist");
-        require(games[gameId].state == GameState.CardsDealt, "Game not in decision phase");
-        require(playerCurrentGame[msg.sender] == gameId, "Player not in this game");
-        
-        if (continueGame) {
-            require(msg.value == CONTINUE_FEE, "Incorrect continue fee");
-        }
-        
-        Game storage game = games[gameId];
-        
-        // Find player index
-        uint8 playerIndex = MAX_PLAYERS; // Invalid index
-        for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-            if (game.players[i].playerAddress == msg.sender) {
-                playerIndex = i;
-                break;
-            }
-        }
-        require(playerIndex < MAX_PLAYERS, "Player not found in game");
-        require(!game.players[playerIndex].hasDecided, "Player already made decision");
-        
-        game.players[playerIndex].hasContinued = continueGame;
-        game.players[playerIndex].hasDecided = true;
-        game.decidedCount++;
-        
-        if (continueGame) {
-            game.prizePool += msg.value;
-            game.continuedCount++;
-        }
-        
-        emit PlayerDecision(gameId, msg.sender, continueGame);
-        
-        // Check if all players made their decisions
-        if (game.decidedCount == MAX_PLAYERS) {
-            if (game.continuedCount == 0) {
-                // All players folded, cancel game
-                _cancelGame(gameId);
-            } else if (game.continuedCount == 1) {
-                // Only one player continued, they win
-                _finishGame(gameId);
-            } else if (game.continuedCount == MAX_PLAYERS) {
-                // All players continued, deal community cards and determine winner
-                _dealCommunityCards(gameId);
-            }
-        }
-    }
-    
-    /// @notice Internal function to deal community cards
-    /// @param gameId The game ID
-    function _dealCommunityCards(uint256 gameId) internal {
-        Game storage game = games[gameId];
-        
-        // Deal 5 community cards
-        for (uint8 i = 0; i < TOTAL_CARDS; i++) {
-            euint8 randomCard = FHE.randEuint8();
-            euint8 card = FHE.add(FHE.rem(randomCard, 52), 1);
-            
-            game.communityCards[i] = card;
-            
-            // Make community cards accessible to all players
-            FHE.allowThis(card);
-            for (uint8 j = 0; j < MAX_PLAYERS; j++) {
-                if (game.players[j].hasJoined) {
-                    FHE.allow(card, game.players[j].playerAddress);
-                }
-            }
-        }
-        
-        _finishGame(gameId);
-    }
-    
-    /// @notice Internal function to finish the game
-    /// @param gameId The game ID
-    function _finishGame(uint256 gameId) internal {
-        Game storage game = games[gameId];
-        
-        // Determine winner
-        if (game.continuedCount == 1) {
-            // Only one player continued, they win
-            for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-                if (game.players[i].hasContinued) {
-                    game.winner = game.players[i].playerAddress;
-                    break;
-                }
-            }
+
+    function joinGame() external payable {
+        require(state == GameState.Waiting || state == GameState.Active, "bad state");
+        require(msg.value == STAKE, "stake");
+
+        // Fill player slots
+        if (_players[0].addr == address(0)) {
+            _players[0].addr = msg.sender;
+            emit Joined(msg.sender, 0);
+        } else if (_players[1].addr == address(0)) {
+            require(msg.sender != _players[0].addr, "already joined");
+            _players[1].addr = msg.sender;
+            emit Joined(msg.sender, 1);
         } else {
-            // For now, randomly select winner among continuing players
-            // In a full implementation, this would involve card comparison logic
-            euint8 randomWinner = FHE.randEuint8();
-            uint8 winnerIndex = 0;
-            uint8 continuingPlayerCount = 0;
-            
-            for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-                if (game.players[i].hasContinued) {
-                    continuingPlayerCount++;
-                    if (continuingPlayerCount == 1) {
-                        winnerIndex = i;
-                    }
-                    // Simple random selection - in production this would be proper card evaluation
-                }
-            }
-            game.winner = game.players[winnerIndex].playerAddress;
+            revert("full");
         }
-        
-        game.state = GameState.GameFinished;
-        
-        // Transfer prize to winner
-        uint256 prize = game.prizePool;
-        game.prizePool = 0;
-        
-        // Clear player game associations
-        for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-            if (game.players[i].hasJoined) {
-                playerCurrentGame[game.players[i].playerAddress] = 0;
+
+        pot += msg.value;
+
+        // Start the game when both players are present
+        if (_players[0].addr != address(0) && _players[1].addr != address(0)) {
+            if (state == GameState.Waiting) {
+                state = GameState.Active;
+                // Deal 2 cards to each player
+                _dealCard(0);
+                _dealCard(0);
+                _dealCard(1);
+                _dealCard(1);
             }
         }
-        
-        // Transfer prize
-        payable(game.winner).transfer(prize);
-        
-        emit GameFinished(gameId, game.winner, prize);
     }
-    
-    /// @notice Internal function to cancel the game
-    /// @param gameId The game ID
-    function _cancelGame(uint256 gameId) internal {
-        Game storage game = games[gameId];
-        game.state = GameState.GameCancelled;
-        
-        // Refund all players
-        uint256 refundAmount = game.prizePool / game.playerCount;
-        
-        for (uint8 i = 0; i < game.playerCount; i++) {
-            if (game.players[i].hasJoined) {
-                playerCurrentGame[game.players[i].playerAddress] = 0;
-                payable(game.players[i].playerAddress).transfer(refundAmount);
+
+    function continueGame() external payable onlyPlayers {
+        require(state == GameState.Active, "bad state");
+        require(msg.value == STAKE, "stake");
+
+        uint8 idx = uint8(uint256(int256(playerIndex(msg.sender))));
+        _players[idx].committed = true;
+        pot += msg.value;
+        emit Continued(msg.sender);
+
+        // When both committed, deal one to each
+        if (_players[0].committed && _players[1].committed) {
+            _players[0].committed = false;
+            _players[1].committed = false;
+
+            _dealCard(0);
+            _dealCard(1);
+
+            // If both at 5, go to reveal
+            if (_players[0].cardCount == 5 && _players[1].cardCount == 5) {
+                state = GameState.Reveal;
             }
         }
-        
-        game.prizePool = 0;
-        emit GameCancelled(gameId);
     }
-    
-    /// @notice Get player's private cards
-    /// @param gameId The game ID
-    /// @param playerAddress The player's address
-    /// @return The player's encrypted cards
-    function getPlayerCards(uint256 gameId, address playerAddress) 
-        external 
-        view 
-        returns (euint8[CARDS_PER_PLAYER] memory) 
-    {
-        Game storage game = games[gameId];
-        
-        for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-            if (game.players[i].playerAddress == playerAddress) {
-                return game.players[i].privateCards;
-            }
+
+    function fold() external onlyPlayers {
+        require(state == GameState.Active, "bad state");
+        // Pay opponent
+        uint8 idx = uint8(uint256(int256(playerIndex(msg.sender))));
+        uint8 opp = idx == 0 ? 1 : 0;
+        address opponent = _players[opp].addr;
+        require(opponent != address(0), "no opponent");
+
+        uint256 amount = pot;
+        pot = 0;
+        state = GameState.Ended;
+        winner = opponent;
+        (bool ok, ) = opponent.call{value: amount}("");
+        require(ok, "transfer");
+        emit Folded(msg.sender, opponent, amount);
+        emit Settled(opponent, amount);
+    }
+
+    // Request public decryption of both sums and settle in the callback
+    function settleRequest() external onlyPlayers {
+        require(state == GameState.Reveal, "bad state");
+
+        // Compute sums as encrypted values
+        _sum0 = _sumHand(_players[0]);
+        _sum1 = _sumHand(_players[1]);
+
+        // Allow this contract to use the sums
+        FHE.allowThis(_sum0);
+        FHE.allowThis(_sum1);
+
+        // Ask oracle to decrypt the two sums and callback
+        bytes32[] memory handles = new bytes32[](2);
+        handles[0] = FHE.toBytes32(_sum0);
+        handles[1] = FHE.toBytes32(_sum1);
+        uint256 requestId = FHE.requestDecryption(handles, this.onSettle.selector);
+        emit RevealRequested(requestId);
+    }
+
+    // Relayer callback with clear sums and KMS signatures
+    function onSettle(uint256 requestId, uint16 clearSum0, uint16 clearSum1, bytes[] calldata signatures) external {
+        // Verify signatures; also emits DecryptionFulfilled(requestId)
+        FHE.checkSignatures(requestId, signatures);
+
+        require(state == GameState.Reveal, "bad state");
+
+        address p0 = _players[0].addr;
+        address p1 = _players[1].addr;
+        require(p0 != address(0) && p1 != address(0), "players");
+
+        address win = clearSum0 >= clearSum1 ? p0 : p1;
+        uint256 amount = pot;
+        pot = 0;
+        state = GameState.Ended;
+        winner = win;
+        (bool ok, ) = win.call{value: amount}("");
+        require(ok, "transfer");
+        emit Settled(win, amount);
+    }
+
+    // Convenience: make caller's cards publicly decryptable (optional)
+    function makeMyCardsPublic() external onlyPlayers {
+        uint8 idx = uint8(uint256(int256(playerIndex(msg.sender))));
+        for (uint8 i = 0; i < _players[idx].cardCount; i++) {
+            _players[idx].cards[i] = FHE.makePubliclyDecryptable(_players[idx].cards[i]);
         }
-        
-        revert("Player not found in game");
     }
-    
-    /// @notice Get community cards
-    /// @param gameId The game ID
-    /// @return The encrypted community cards
-    function getCommunityCards(uint256 gameId) 
-        external 
-        view 
-        returns (euint8[TOTAL_CARDS] memory) 
-    {
-        return games[gameId].communityCards;
+
+    // --- Internals ---
+    function _dealCard(uint8 idx) internal {
+        require(idx < 2, "idx");
+        Player storage p = _players[idx];
+        require(p.addr != address(0), "player");
+        require(p.cardCount < 5, "full");
+
+        // Generate encrypted random card in [0,52)
+        // Use power-of-two upper bound then reduce with remainder
+        euint8 r = FHE.randEuint8(64);
+        euint8 card = FHE.rem(r, 52);
+
+        // Save and grant usage rights
+        p.cards[p.cardCount] = card;
+        p.cardCount += 1;
+
+        // Allow player and this contract to use their card
+        FHE.allow(card, p.addr);
+        FHE.allowThis(card);
+
+        emit Dealt(p.addr, p.cardCount);
     }
-    
-    /// @notice Get game information
-    /// @param gameId The game ID
-    /// @return state The current game state
-    /// @return playerCount The number of players in the game
-    /// @return prizePool The total prize pool amount
-    /// @return winner The address of the winner (if game is finished)
-    function getGameInfo(uint256 gameId) 
-        external 
-        view 
-        returns (
-            GameState state,
-            uint8 playerCount,
-            uint256 prizePool,
-            address winner
-        ) 
-    {
-        Game storage game = games[gameId];
-        return (game.state, game.playerCount, game.prizePool, game.winner);
-    }
-    
-    /// @notice Get player list for a game
-    /// @param gameId The game ID
-    /// @return players Array of player addresses
-    function getPlayers(uint256 gameId) 
-        external 
-        view 
-        returns (address[MAX_PLAYERS] memory) 
-    {
-        Game storage game = games[gameId];
-        address[MAX_PLAYERS] memory playerAddresses;
-        
-        for (uint8 i = 0; i < MAX_PLAYERS; i++) {
-            playerAddresses[i] = game.players[i].playerAddress;
+
+    function _sumHand(Player storage p) internal returns (euint16 total) {
+        total = FHE.asEuint16(0);
+        for (uint8 i = 0; i < p.cardCount; i++) {
+            // Add euint8 card to euint16 accumulator (supported mixed-type add)
+            total = FHE.add(total, p.cards[i]);
         }
-        
-        return playerAddresses;
-    }
-    
-    /// @notice Emergency function to cancel a stuck game
-    /// @param gameId The game ID
-    function emergencyCancel(uint256 gameId) external {
-        require(games[gameId].gameId != 0, "Game does not exist");
-        require(games[gameId].state != GameState.GameFinished, "Game already finished");
-        require(games[gameId].state != GameState.GameCancelled, "Game already cancelled");
-        require(
-            block.timestamp > games[gameId].createdAt + 1 hours, 
-            "Game not old enough for emergency cancel"
-        );
-        
-        _cancelGame(gameId);
+        // Also allow both players to use the sum for optional decryptions
+        FHE.allow(total, _players[0].addr);
+        FHE.allow(total, _players[1].addr);
     }
 }
