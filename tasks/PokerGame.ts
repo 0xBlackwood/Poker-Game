@@ -1,98 +1,47 @@
 import { task } from "hardhat/config";
 import type { TaskArguments } from "hardhat/types";
-import { fhevm } from "hardhat";
 
-task("task:createGame")
-  .setDescription("Create a new poker game")
-  .setAction(async function (taskArguments: TaskArguments, { ethers, network }) {
-    const signers = await ethers.getSigners();
-    const pokerGameFactory = await ethers.getContractFactory("PokerGame");
-    const pokerGame = pokerGameFactory.attach("0x0000000000000000000000000000000000000000"); // Replace with deployed address
+task("poker:address", "Prints the PokerGame address").setAction(async (_args: TaskArguments, hre) => {
+  const { deployments } = hre;
+  const d = await deployments.get("PokerGame");
+  console.log(d.address);
+});
 
-    const transaction = await pokerGame.connect(signers[0]).createGame();
-    await transaction.wait();
+task("poker:join", "Join the current game with stake").setAction(async (_args: TaskArguments, hre) => {
+  const { ethers, deployments } = hre;
+  const d = await deployments.get("PokerGame");
+  const c = await ethers.getContractAt("PokerGame", d.address);
+  const STAKE = await c.STAKE();
+  const tx = await c.joinGame({ value: STAKE });
+  console.log(`join tx: ${tx.hash}`);
+  await tx.wait();
+});
 
-    console.log(`Game created! Transaction: ${transaction.hash}`);
-  });
+task("poker:continue", "Commit to continue this round").setAction(async (_args: TaskArguments, hre) => {
+  const { ethers, deployments } = hre;
+  const d = await deployments.get("PokerGame");
+  const c = await ethers.getContractAt("PokerGame", d.address);
+  const STAKE = await c.STAKE();
+  const tx = await c.continueGame({ value: STAKE });
+  console.log(`continue tx: ${tx.hash}`);
+  await tx.wait();
+});
 
-task("task:joinGame")
-  .addParam("gameId", "The game ID to join")
-  .setDescription("Join a poker game")
-  .setAction(async function (taskArguments: TaskArguments, { ethers, network }) {
-    const signers = await ethers.getSigners();
-    const pokerGameFactory = await ethers.getContractFactory("PokerGame");
-    const pokerGame = pokerGameFactory.attach("0x0000000000000000000000000000000000000000"); // Replace with deployed address
+task("poker:fold", "Fold and give the pot to opponent").setAction(async (_args: TaskArguments, hre) => {
+  const { ethers, deployments } = hre;
+  const d = await deployments.get("PokerGame");
+  const c = await ethers.getContractAt("PokerGame", d.address);
+  const tx = await c.fold();
+  console.log(`fold tx: ${tx.hash}`);
+  await tx.wait();
+});
 
-    const joinFee = await pokerGame.JOIN_FEE();
-    
-    const transaction = await pokerGame.connect(signers[0]).joinGame(
-      taskArguments.gameId,
-      { value: joinFee }
-    );
-    await transaction.wait();
+task("poker:settle", "Request reveal and settlement").setAction(async (_args: TaskArguments, hre) => {
+  const { ethers, deployments } = hre;
+  const d = await deployments.get("PokerGame");
+  const c = await ethers.getContractAt("PokerGame", d.address);
+  const tx = await c.settleRequest();
+  console.log(`settle request tx: ${tx.hash}`);
+  await tx.wait();
+});
 
-    console.log(`Joined game ${taskArguments.gameId}! Transaction: ${transaction.hash}`);
-  });
-
-task("task:makeDecision")
-  .addParam("gameId", "The game ID")
-  .addParam("continue", "Whether to continue (true/false)")
-  .setDescription("Make a decision in a poker game")
-  .setAction(async function (taskArguments: TaskArguments, { ethers, network }) {
-    const signers = await ethers.getSigners();
-    const pokerGameFactory = await ethers.getContractFactory("PokerGame");
-    const pokerGame = pokerGameFactory.attach("0x0000000000000000000000000000000000000000"); // Replace with deployed address
-
-    const continueGame = taskArguments.continue === "true";
-    const continueFee = await pokerGame.CONTINUE_FEE();
-    
-    const transaction = await pokerGame.connect(signers[0]).makeDecision(
-      taskArguments.gameId,
-      continueGame,
-      { value: continueGame ? continueFee : 0 }
-    );
-    await transaction.wait();
-
-    console.log(`Made decision for game ${taskArguments.gameId}! Transaction: ${transaction.hash}`);
-  });
-
-task("task:getGameInfo")
-  .addParam("gameId", "The game ID")
-  .setDescription("Get game information")
-  .setAction(async function (taskArguments: TaskArguments, { ethers, network }) {
-    const signers = await ethers.getSigners();
-    const pokerGameFactory = await ethers.getContractFactory("PokerGame");
-    const pokerGame = pokerGameFactory.attach("0x0000000000000000000000000000000000000000"); // Replace with deployed address
-
-    const gameInfo = await pokerGame.getGameInfo(taskArguments.gameId);
-    const players = await pokerGame.getPlayers(taskArguments.gameId);
-
-    console.log("Game Info:");
-    console.log("- State:", gameInfo.state);
-    console.log("- Player Count:", gameInfo.playerCount.toString());
-    console.log("- Prize Pool:", ethers.formatEther(gameInfo.prizePool.toString()), "ETH");
-    console.log("- Winner:", gameInfo.winner);
-    console.log("- Players:", players.filter(addr => addr !== "0x0000000000000000000000000000000000000000"));
-  });
-
-task("task:getPlayerCards")
-  .addParam("gameId", "The game ID")
-  .addParam("playerAddress", "The player's address")
-  .setDescription("Get player's cards (encrypted)")
-  .setAction(async function (taskArguments: TaskArguments, { ethers, network }) {
-    const signers = await ethers.getSigners();
-    const pokerGameFactory = await ethers.getContractFactory("PokerGame");
-    const pokerGame = pokerGameFactory.attach("0x0000000000000000000000000000000000000000"); // Replace with deployed address
-
-    try {
-      const cards = await pokerGame.getPlayerCards(taskArguments.gameId, taskArguments.playerAddress);
-      console.log("Player's encrypted cards:", cards);
-      
-      // If we want to decrypt them (only the owner can do this)
-      if (network.name === "sepolia") {
-        console.log("To decrypt these cards, you need to use the relayer SDK on the frontend");
-      }
-    } catch (error) {
-      console.log("Error getting player cards:", error);
-    }
-  });
