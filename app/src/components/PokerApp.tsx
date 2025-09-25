@@ -14,15 +14,26 @@ export function PokerApp() {
   const { instance } = useZamaInstance();
   const signerPromise = useEthersSigner();
 
+  const [gameId, setGameId] = useState<string>('');
   const [myIndex, setMyIndex] = useState<number | null>(null);
   const [decryptedCards, setDecryptedCards] = useState<number[] | null>(null);
   const [txBusy, setTxBusy] = useState<string | null>(null);
+  const [createStakeEth, setCreateStakeEth] = useState<string>('0.0001');
 
-  const { data: stake } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'STAKE' });
-  const { data: pot } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'pot', });
-  const { data: state } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'state', });
-  const { data: p0 } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'getPlayer', args: [0] });
-  const { data: p1 } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'getPlayer', args: [1] });
+  const gameIdNum = gameId ? BigInt(gameId) : null;
+  const { data: gameInfo } = useReadContract({
+    address: CONTRACT_ADDRESS as any,
+    abi: CONTRACT_ABI,
+    functionName: 'getGame',
+    args: gameIdNum !== null ? [gameIdNum] : undefined,
+    query: { enabled: gameIdNum !== null }
+  });
+  const { data: stake } = useReadContract({
+    address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'getStake',
+    args: gameIdNum !== null ? [gameIdNum] : undefined, query: { enabled: gameIdNum !== null }
+  });
+  const { data: p0 } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'getPlayer', args: gameIdNum !== null ? [gameIdNum, 0] : undefined, query: { enabled: gameIdNum !== null } });
+  const { data: p1 } = useReadContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI, functionName: 'getPlayer', args: gameIdNum !== null ? [gameIdNum, 1] : undefined, query: { enabled: gameIdNum !== null } });
 
   const players: PlayerInfo[] = useMemo(() => {
     const a: PlayerInfo = p0 ? { addr: p0[0], cardCount: Number(p0[1]), committed: Boolean(p0[2]) } : (null as any);
@@ -42,7 +53,7 @@ export function PokerApp() {
   }, [address, players]);
 
   const readMyCardHandles = async (): Promise<`0x${string}`[]> => {
-    if (myIndex === null) return [];
+    if (myIndex === null || gameIdNum === null) return [];
     const count = players[myIndex].cardCount;
     const client = (await import('viem')).createPublicClient({
       chain: (await import('wagmi/chains')).sepolia,
@@ -52,7 +63,7 @@ export function PokerApp() {
       address: CONTRACT_ADDRESS as any,
       abi: CONTRACT_ABI as any,
       functionName: 'getCardAt',
-      args: [myIndex, i],
+      args: [gameIdNum!, myIndex, i],
     }) as Promise<`0x${string}`>);
     return Promise.all(calls);
   };
@@ -91,6 +102,7 @@ export function PokerApp() {
   };
 
   const write = async (fn: 'joinGame'|'continueGame'|'fold'|'settleRequest') => {
+    if (gameIdNum === null) { alert('Enter a gameId'); return; }
     const signer = await signerPromise;
     if (!signer) throw new Error('No signer');
     const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
@@ -98,12 +110,30 @@ export function PokerApp() {
     try {
       if (fn === 'joinGame' || fn === 'continueGame') {
         const s = stake as unknown as bigint;
-        const tx = await (c as any)[fn]({ value: s });
+        const tx = await (c as any)[fn](gameIdNum, { value: s });
         await tx.wait();
       } else {
-        const tx = await (c as any)[fn]();
+        const tx = await (c as any)[fn](gameIdNum);
         await tx.wait();
       }
+    } finally {
+      setTxBusy(null);
+    }
+  };
+
+  const createGame = async () => {
+    const signer = await signerPromise;
+    if (!signer) throw new Error('No signer');
+    const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    const wei = (await import('ethers')).parseEther(createStakeEth || '0');
+    setTxBusy('create');
+    try {
+      const tx = await (c as any).createGame(wei);
+      await tx.wait();
+      // read nextGameId and set current = next - 1
+      const client = (await import('viem')).createPublicClient({ chain: (await import('wagmi/chains')).sepolia, transport: (await import('viem')).http() });
+      const next: bigint = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'nextGameId' }) as any;
+      setGameId(String(next - 1n));
     } finally {
       setTxBusy(null);
     }
@@ -141,23 +171,29 @@ export function PokerApp() {
         <div className="row">
           <div>
             <div>Contract: {CONTRACT_ADDRESS || '(set after deploy)'}</div>
-            <div>Stake: {stake ? formatEther(stake as any) : '-'} ETH</div>
-            <div>Pot: {pot ? formatEther(pot as any) : '-'} ETH</div>
-            <div>State: {typeof state === 'number' ? state : (state as any)?.toString?.() ?? '-'}</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8 }}>
+              <input placeholder="Game ID" value={gameId} onChange={e=>setGameId(e.target.value)} style={{ padding: 8, border: '1px solid #e2e8f0', borderRadius: 8 }} />
+              <span style={{ color: '#475569' }}>or</span>
+              <input placeholder="Stake (ETH)" value={createStakeEth} onChange={e=>setCreateStakeEth(e.target.value)} style={{ padding: 8, border: '1px solid #e2e8f0', borderRadius: 8, width: 120 }} />
+              <button className="secondary" onClick={createGame} disabled={!isConnected || txBusy==='create'}>Create Game</button>
+            </div>
+            <div style={{ marginTop: 8 }}>Stake: {stake ? formatEther(stake as any) : '-' } ETH</div>
+            <div>State: {gameInfo ? (gameInfo as any)[0].toString() : '-'}</div>
+            <div>Pot: {gameInfo ? formatEther((gameInfo as any)[1]) : '-' } ETH</div>
           </div>
         </div>
 
         <div className="row" style={{ gap: 12 }}>
-          <button className="primary" onClick={() => write('joinGame')} disabled={!isConnected || !stake || !!myIndex || txBusy=== 'joinGame'}>
+          <button className="primary" onClick={() => write('joinGame')} disabled={!isConnected || !stake || !!myIndex || !gameId || txBusy=== 'joinGame'}>
             Join ({stake ? formatEther(stake as any) : '-' } ETH)
           </button>
-          <button className="primary" onClick={() => write('continueGame')} disabled={!isConnected || !stake || myIndex===null || (players[myIndex||0]?.cardCount??0)>=5 || state!==1 || txBusy==='continueGame'}>
+          <button className="primary" onClick={() => write('continueGame')} disabled={!isConnected || !stake || myIndex===null || (players[myIndex||0]?.cardCount??0)>=5 || (gameInfo ? Number((gameInfo as any)[0]) !== 1 : true) || txBusy==='continueGame'}>
             Continue ({stake ? formatEther(stake as any) : '-' } ETH)
           </button>
-          <button className="danger" onClick={() => write('fold')} disabled={!isConnected || myIndex===null || state!==1 || txBusy==='fold'}>
+          <button className="danger" onClick={() => write('fold')} disabled={!isConnected || myIndex===null || (gameInfo ? Number((gameInfo as any)[0]) !== 1 : true) || txBusy==='fold'}>
             Fold
           </button>
-          <button className="secondary" onClick={() => write('settleRequest')} disabled={!isConnected || state!==2 || txBusy==='settleRequest'}>
+          <button className="secondary" onClick={() => write('settleRequest')} disabled={!isConnected || (gameInfo ? Number((gameInfo as any)[0]) !== 2 : true) || txBusy==='settleRequest'}>
             Reveal & Settle
           </button>
         </div>
@@ -169,4 +205,3 @@ export function PokerApp() {
     </div>
   );
 }
-
