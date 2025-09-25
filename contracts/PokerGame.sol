@@ -54,6 +54,22 @@ contract PokerGame {
         }
     }
 
+    // --- Views & helpers ---
+    function gameCount() external view returns (uint256) {
+        return nextGameId;
+    }
+
+    function gameExists(uint256 gameId) external view returns (bool) {
+        return _games[gameId].exists;
+    }
+
+    function getPlayers(uint256 gameId) external view returns (address addr0, address addr1) {
+        Game storage g = _games[gameId];
+        require(g.exists, "game");
+        addr0 = g.players[0].addr;
+        addr1 = g.players[1].addr;
+    }
+
     modifier onlyPlayers(uint256 gameId) {
         Game storage g = _games[gameId];
         require(g.exists, "game");
