@@ -144,7 +144,9 @@ function AllGames({ address }: { address?: `0x${string}` }) {
       const signer = await signerPromise;
       if (!signer) throw new Error('No signer');
       const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
-      const tx = await (c as any).joinGame(id, { value: stake });
+      const est = await (c as any).estimateGas.joinGame(id, { value: stake });
+      const gasLimit = (est as bigint) * 2n;
+      const tx = await (c as any).joinGame(id, { value: stake, gasLimit });
       await tx.wait();
       // refresh list quickly for this id
       const client = (await import('viem')).createPublicClient({ chain: (await import('wagmi/chains')).sepolia, transport: (await import('viem')).http() });
