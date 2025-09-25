@@ -1,5 +1,5 @@
 // PokerGame contract (update address after deploy)
-export const CONTRACT_ADDRESS = '0x3d798094CECAA9325A5ACA63af4AdEE874603C1f';
+export const CONTRACT_ADDRESS = '0x680B69360365138A7fE2D926d04b47a8CC8a5e08';
 
 // ABI for PokerGame.sol (synced from deployments/sepolia/PokerGame.json)
 export const CONTRACT_ABI = [
