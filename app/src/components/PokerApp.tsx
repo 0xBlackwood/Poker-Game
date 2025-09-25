@@ -115,6 +115,8 @@ export function PokerApp() {
 
 function AllGames({ address }: { address?: `0x${string}` }) {
   const [items, setItems] = useState<any[]>([]);
+  const signerPromise = useEthersSigner();
+  const [joining, setJoining] = useState<string>('');
   useEffect(() => { (async () => {
     const client = (await import('viem')).createPublicClient({ chain: (await import('wagmi/chains')).sepolia, transport: (await import('viem')).http() });
     const count: bigint = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'gameCount', args: [] }) as any;
@@ -134,6 +136,26 @@ function AllGames({ address }: { address?: `0x${string}` }) {
     return states[state] || '❓ Unknown';
   };
 
+  const join = async (id: bigint, stake: bigint, p0: string, p1: string) => {
+    const lower = (s: string) => (s||'').toLowerCase();
+    if (!address || lower(address)===lower(p0) || lower(address)===lower(p1)) return;
+    setJoining(id.toString());
+    try {
+      const signer = await signerPromise;
+      if (!signer) throw new Error('No signer');
+      const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+      const tx = await (c as any).joinGame(id, { value: stake });
+      await tx.wait();
+      // refresh list quickly for this id
+      const client = (await import('viem')).createPublicClient({ chain: (await import('wagmi/chains')).sepolia, transport: (await import('viem')).http() });
+      const g: any = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'getGame', args: [id] });
+      const players: any = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'getPlayers', args: [id] });
+      setItems(prev => prev.map(x => x.id===id ? { id, state: Number(g[0]), pot: g[1], winner: g[2], stake: g[3], p0: players[0], p1: players[1] } : x));
+    } finally {
+      setJoining('');
+    }
+  };
+
   return (
     <div>
       <h3>🌐 All Games</h3>
@@ -143,7 +165,7 @@ function AllGames({ address }: { address?: `0x${string}` }) {
         </div>
       ) : (
         items.map(x=> (
-          <div key={String(x.id)} className="row">
+          <div key={String(x.id)} className="row" style={{justifyContent:'space-between'}}>
             <div className="game-info">
               <div className="game-title">🎲 Game #{x.id.toString()}</div>
               <div className="game-meta">
@@ -152,6 +174,23 @@ function AllGames({ address }: { address?: `0x${string}` }) {
               <div className="game-meta">
                 👥 Players: {x.p0 ? `${x.p0.slice(0,6)}...${x.p0.slice(-4)}` : 'Empty'} vs {x.p1 ? `${x.p1.slice(0,6)}...${x.p1.slice(-4)}` : 'Empty'}
               </div>
+            </div>
+            <div>
+              {(() => {
+                const emptyAddr = '0x0000000000000000000000000000000000000000';
+                const slotOpen = (x.p0 === emptyAddr) || (x.p1 === emptyAddr);
+                const notEnded = x.state !== 3;
+                const canJoin = !!address && slotOpen && notEnded;
+                return (
+                  <button
+                    className="primary"
+                    disabled={!canJoin || joining===x.id.toString()}
+                    onClick={()=>join(x.id, x.stake, x.p0, x.p1)}
+                  >
+                    {joining===x.id.toString() ? '⏳ Joining...' : 'Join'}
+                  </button>
+                );
+              })()}
             </div>
           </div>
         ))
