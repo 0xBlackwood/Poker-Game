@@ -7,6 +7,16 @@ import { useEthersSigner } from '../hooks/useEthersSigner';
 import { Contract, formatEther } from 'ethers';
 import '../App.css';
 
+// Display 0..51 as suit+rank
+const formatCard = (n: number): string => {
+  if (typeof n !== 'number' || n < 0 || n > 51 || !Number.isFinite(n)) return '❓';
+  const suits = ['♣', '♦', '♥', '♠'];
+  const ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+  const suit = suits[Math.floor(n / 13)];
+  const rank = ranks[n % 13];
+  return `${suit}${rank}`;
+};
+
 export function PokerApp() {
   const { address, isConnected } = useAccount();
   const signerPromise = useEthersSigner();
@@ -134,15 +144,6 @@ function AllGames({ address }: { address?: `0x${string}` }) {
   const getStateLabel = (state: number) => {
     const states = ['🆕 New', '🎮 Playing', '⏳ Waiting', '🏆 Finished'];
     return states[state] || '❓ Unknown';
-  };
-
-  const formatCard = (n: number): string => {
-    if (typeof n !== 'number' || n < 0 || n > 51 || !Number.isFinite(n)) return '❓';
-    const suits = ['♣', '♦', '♥', '♠'];
-    const ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
-    const suit = suits[Math.floor(n / 13)];
-    const rank = ranks[n % 13];
-    return `${suit}${rank}`;
   };
 
   const join = async (id: bigint, stake: bigint, p0: string, p1: string) => {
