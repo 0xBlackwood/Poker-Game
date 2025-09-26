@@ -136,6 +136,15 @@ function AllGames({ address }: { address?: `0x${string}` }) {
     return states[state] || '❓ Unknown';
   };
 
+  const formatCard = (n: number): string => {
+    if (typeof n !== 'number' || n < 0 || n > 51 || !Number.isFinite(n)) return '❓';
+    const suits = ['♣', '♦', '♥', '♠'];
+    const ranks = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+    const suit = suits[Math.floor(n / 13)];
+    const rank = ranks[n % 13];
+    return `${suit}${rank}`;
+  };
+
   const join = async (id: bigint, stake: bigint, p0: string, p1: string) => {
     const lower = (s: string) => (s||'').toLowerCase();
     if (!address || lower(address)===lower(p0) || lower(address)===lower(p1)) return;
@@ -164,7 +173,7 @@ function AllGames({ address }: { address?: `0x${string}` }) {
       <h3>🌐 All Games</h3>
       {items.length === 0 ? (
         <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
-          No games found. Create the first game! 🎯
+         Games Loading...
         </div>
       ) : (
         items.map(x=> (
@@ -369,7 +378,7 @@ function MyGames({ address }: { address?: `0x${string}` }) {
                 {getStateLabel(x.state)} • 💰 Stake: {formatEther(x.stake)} ETH • 🏆 Pot: {formatEther(x.pot)} ETH
               </div>
               <div className="game-meta">
-                🎯 My Position: Player {x.idx + 1} • 🃏 Cards: {x.cards?.length ? x.cards.join(', ') : '🔒 encrypted'}
+                🎯 My Position: Player {x.idx + 1} • 🃏 Cards: {x.cards?.length ? x.cards.map((c:number)=>formatCard(c)).join(', ') : '🔒 encrypted'}
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
