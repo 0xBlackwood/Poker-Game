@@ -145,7 +145,8 @@ function AllGames({ address }: { address?: `0x${string}` }) {
       if (!signer) throw new Error('No signer');
       const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
       const est = await (c as any).estimateGas.joinGame(id, { value: stake });
-      const gasLimit = (est as bigint) * 2n;
+      let gasLimit = (est as bigint) * 2n;
+      if (gasLimit < 200000n) gasLimit = 200000n;
       const tx = await (c as any).joinGame(id, { value: stake, gasLimit });
       await tx.wait();
       // refresh list quickly for this id
@@ -234,6 +235,7 @@ function MyGames({ address }: { address?: `0x${string}` }) {
         const h = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'getCardAt', args: [id, idx, i] }) as any;
         handles.push(h);
       }
+      console.log('decryptCards: gameId', id.toString(), 'idx', idx, 'handles', handles);
       const pairs = handles.map(h => ({ handle: h, contractAddress: CONTRACT_ADDRESS }));
       const keypair = instance.generateKeypair();
       const startTimeStamp = Math.floor(Date.now() / 1000).toString();
@@ -244,7 +246,34 @@ function MyGames({ address }: { address?: `0x${string}` }) {
       if (!signer) throw new Error('No signer');
       const signature = await signer.signTypedData(eip712.domain, { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification }, eip712.message);
       const result = await instance.userDecrypt(pairs, keypair.privateKey, keypair.publicKey, signature.replace('0x',''), contractAddresses, address, startTimeStamp, durationDays);
-      const nums = (result as any[]).map(x=>Number(x));
+      console.log('decryptCards: raw result', result);
+      const arr = Array.isArray(result)
+        ? result
+        : (Array.isArray((result as any)?.results) ? (result as any).results
+          : Array.isArray((result as any)?.cleartexts) ? (result as any).cleartexts
+          : Array.isArray((result as any)?.data) ? (result as any).data
+          : Array.isArray((result as any)?.values) ? (result as any).values
+          : [result]);
+      console.log('decryptCards: normalized array', arr);
+      const toNum = (x:any): number => {
+        const t = typeof x;
+        if (t === 'number') return x as number;
+        if (t === 'bigint') return Number(x as bigint);
+        if (t === 'string') {
+          const s = x as string;
+          const n = s.startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
+          return Number.isNaN(n) ? 0 : n;
+        }
+        try {
+          const s = String(x);
+          const n = s.startsWith('0x') ? parseInt(s, 16) : parseInt(s, 10);
+          return Number.isNaN(n) ? 0 : n;
+        } catch {
+          return 0;
+        }
+      };
+      const nums = (arr as any[]).map(toNum);
+      console.log('decryptCards: parsed numbers', nums);
       setItems(prev => prev.map(g => g.id===id ? { ...g, cards: nums } : g));
     } finally {
       setDecrypting('');
@@ -261,7 +290,7 @@ function MyGames({ address }: { address?: `0x${string}` }) {
       <h3>👤 My Games</h3>
       {items.length === 0 ? (
         <div style={{ textAlign: 'center', color: 'var(--text-secondary)', padding: '2rem' }}>
-          {address ? 'You have no games yet. Join or create one! 🎮' : 'Connect your wallet to see your games 🔗'}
+          {address ? 'Loading your game...\nIf you have no games yet. Join or create one! 🎮' : 'Connect your wallet to see your games 🔗'}
         </div>
       ) : (
         items.map(x=> (
