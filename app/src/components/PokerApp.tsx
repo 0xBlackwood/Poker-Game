@@ -300,6 +300,54 @@ function MyGames({ address }: { address?: `0x${string}` }) {
     }
   };
 
+  const refreshRow = async (id: bigint) => {
+    const client = (await import('viem')).createPublicClient({ chain: (await import('wagmi/chains')).sepolia, transport: (await import('viem')).http() });
+    const g: any = await client.readContract({ address: CONTRACT_ADDRESS as any, abi: CONTRACT_ABI as any, functionName: 'getGame', args: [id] });
+    setItems(prev => prev.map(x => x.id===id ? { ...x, state: Number(g[0]), pot: g[1], winner: g[2], stake: g[3] } : x));
+  };
+
+  const continueGame = async (id: bigint, stake: bigint) => {
+    const signer = await signerPromise;
+    if (!signer) throw new Error('No signer');
+    const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    let gasLimit: bigint = 200000n;
+    try {
+      const est: bigint = await (c as any).estimateGas.continueGame(id, { value: stake });
+      gasLimit = est * 2n > gasLimit ? est * 2n : gasLimit;
+    } catch {}
+    const tx = await (c as any).continueGame(id, { value: stake, gasLimit });
+    await tx.wait();
+    await refreshRow(id);
+  };
+
+  const foldGame = async (id: bigint) => {
+    const signer = await signerPromise;
+    if (!signer) throw new Error('No signer');
+    const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    let gasLimit: bigint = 200000n;
+    try {
+      const est: bigint = await (c as any).estimateGas.fold(id);
+      gasLimit = est * 2n > gasLimit ? est * 2n : gasLimit;
+    } catch {}
+    const tx = await (c as any).fold(id, { gasLimit });
+    await tx.wait();
+    await refreshRow(id);
+  };
+
+  const settleGame = async (id: bigint) => {
+    const signer = await signerPromise;
+    if (!signer) throw new Error('No signer');
+    const c = new Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+    let gasLimit: bigint = 200000n;
+    try {
+      const est: bigint = await (c as any).estimateGas.settleRequest(id);
+      gasLimit = est * 2n > gasLimit ? est * 2n : gasLimit;
+    } catch {}
+    const tx = await (c as any).settleRequest(id, { gasLimit });
+    await tx.wait();
+    await refreshRow(id);
+  };
+
   const getStateLabel = (state: number) => {
     const states = ['🆕 New', '🎮 Playing', '⏳ Waiting', '🏆 Finished'];
     return states[state] || '❓ Unknown';
@@ -324,14 +372,25 @@ function MyGames({ address }: { address?: `0x${string}` }) {
                 🎯 My Position: Player {x.idx + 1} • 🃏 Cards: {x.cards?.length ? x.cards.join(', ') : '🔒 encrypted'}
               </div>
             </div>
-            <div>
-              <button
-                className="primary"
-                onClick={()=>decryptCards(x.id, x.idx)}
-                disabled={decrypting===x.id.toString()}
-              >
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button className="primary" onClick={()=>decryptCards(x.id, x.idx)} disabled={decrypting===x.id.toString()}>
                 {decrypting === x.id.toString() ? '⏳ Decrypting...' : '🔓 Decrypt Cards'}
               </button>
+              {x.state === 1 && x.cards?.length < 5 && (
+                <button className="primary" onClick={()=>continueGame(x.id, x.stake)}>
+                  ▶️ Continue
+                </button>
+              )}
+              {x.state === 1 && (
+                <button className="danger" onClick={()=>foldGame(x.id)}>
+                  🏳️ Fold
+                </button>
+              )}
+              {x.state === 2 && (
+                <button className="secondary" onClick={()=>settleGame(x.id)}>
+                  🔍 Reveal & Settle
+                </button>
+              )}
             </div>
           </div>
         ))
