@@ -245,15 +245,35 @@ function MyGames({ address }: { address?: `0x${string}` }) {
       const signer = await signerPromise;
       if (!signer) throw new Error('No signer');
       const signature = await signer.signTypedData(eip712.domain, { UserDecryptRequestVerification: eip712.types.UserDecryptRequestVerification }, eip712.message);
-      const result = await instance.userDecrypt(pairs, keypair.privateKey, keypair.publicKey, signature.replace('0x',''), contractAddresses, address, startTimeStamp, durationDays);
+      const result: any = await instance.userDecrypt(
+        pairs,
+        keypair.privateKey,
+        keypair.publicKey,
+        signature.replace('0x',''),
+        contractAddresses,
+        address,
+        startTimeStamp,
+        durationDays
+      );
       console.log('decryptCards: raw result', result);
-      const arr = Array.isArray(result)
-        ? result
-        : (Array.isArray((result as any)?.results) ? (result as any).results
-          : Array.isArray((result as any)?.cleartexts) ? (result as any).cleartexts
-          : Array.isArray((result as any)?.data) ? (result as any).data
-          : Array.isArray((result as any)?.values) ? (result as any).values
-          : [result]);
+      let arr: any[];
+      if (Array.isArray(result)) {
+        arr = result as any[];
+      } else if (result && typeof result === 'object') {
+        // Some SDKs return an object map: { handleHex: bigint, ... }
+        const ordered = handles.map(h => (result as any)[h]).filter((v:any)=> v!==undefined);
+        arr = ordered.length ? ordered : Object.values(result as any);
+      } else if (Array.isArray((result as any)?.results)) {
+        arr = (result as any).results;
+      } else if (Array.isArray((result as any)?.cleartexts)) {
+        arr = (result as any).cleartexts;
+      } else if (Array.isArray((result as any)?.data)) {
+        arr = (result as any).data;
+      } else if (Array.isArray((result as any)?.values)) {
+        arr = (result as any).values;
+      } else {
+        arr = [result];
+      }
       console.log('decryptCards: normalized array', arr);
       const toNum = (x:any): number => {
         const t = typeof x;
